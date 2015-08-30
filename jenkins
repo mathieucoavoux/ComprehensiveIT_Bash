@@ -1,0 +1,152 @@
+#!/bin/bash
+#set -x
+### BEGIN INIT INFO
+# Provides:          ComprehensiveIT
+# Required-Start:    $syslog
+# Required-Stop:     $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# X-Interactive:     true
+# Short-Description: Jenkins server
+# Description:       Start the Jenkins server
+#  This script will start Jenkins
+### END INIT INF
+ENV="env -i LANG=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+DESC="Jenkins server"
+NAME=jenkins
+EXTPKG=war
+DAEMON="/usr/bin/java"
+WAR=${NAME}.${EXTPKG}
+XMIN="256m"
+XMAX="512m"
+PID=/var/run/jenkins.pid
+
+SCRIPTNAME="${0##*/}"
+SCRIPTNAME="${SCRIPTNAME##[KS][0-9][0-9]}"
+if [ -z "$JENKINS_CONFDIR" ] ; then
+	JENKINS_CONFDIR=/opt/jenkins
+fi
+if grep -q "^logfile=" $JENKINS_CONFDIR/envvars
+then
+	LOGFILE=$(grep "^logfile=" $JENKINS_CONFDIR/envvars|awk -F'=' '{print $2}')
+else
+	LOGFILE=/var/log/jenkins.log
+fi
+DAEMON_OPTS="-Xms${XMIN} -Xmx${XMAX} -jar ${JENKINS_CONFDIR}/${WAR} --daemon"
+
+USAGE="$SCRIPTNAME {start|stop|restart|status}"
+
+VERBOSE=no
+. /lib/lsb/init-functions
+
+#
+# Function that starts the daemon/service
+#
+print_error_msg() {
+	log_failure_msg "$1"
+	echo "$1" >> $LOGFILE
+	exit 1
+}
+get_args(){
+	#Set the jenkins as daemon by default
+	if [ -r ${JENKINS_CONFDIR}/envvars ] 
+	then
+		for i in $(grep -v "^#" ${JENKINS_CONFDIR}/envvars)
+		do
+			DAEMON_OPTS="${DAEMON_OPTS} --${i}"
+		done
+		return 0
+	else
+		print_error_msg "${JENKINS_CONFDIR}/envvars not found or not readable"
+		return 1
+	fi
+}
+do_start()
+{
+	#Backup the daemon file if it exists
+	[ -f $PID ] && print_error_msg "$DESC is already running"
+	if [ -f /var/run/daemon.pid ]; then
+		[ -w /var/run/daemon.pid ] || print_error_msg "The file /var/run/daemon.pid cannot be written. Please ensure another deamon is not locking it"
+		TOKEN=$(date +%Y%m%d-%H%M%s)
+		mv /var/run/daemon.pid /var/run/daemon.pid.$TOKEN
+	fi
+	# Return
+        #   0 if daemon has been started
+        #   1 if daemon was already running
+        #   2 if daemon could not be started
+        #start-stop-daemon --start --quiet --pidfile $PID --exec $DAEMON -S -- "$DAEMON_OPTS" --test > /dev/null \
+        #        || return 1
+        start-stop-daemon --start --quiet --pidfile $PID --exec $DAEMON -S -- $DAEMON_OPTS >> $LOGFILE 2>&1 \
+                || return 1
+	sleep 10
+	mv /var/run/daemon.pid $PID
+	[ -f /var/run/daemon.pid.$TOKEN ] && mv /var/run/daemon.pid.$TOKEN /var/run/daemon.pid
+	return 0
+}
+do_stop()
+{
+	if [ ! -f $PID ]; then
+		PROC_ID=$(jcmd -l|grep $NAME|awk -F' ' '{print $1}')
+		[ -z $PROC_ID ] && print_error_msg "$DESC is not running"
+		#if $(grep -q $NAME <<< $(ps -e -o cmd))
+		#then
+		#	PROC_ID=$(ps -e -o pid,cmd|grep $NAME|awk -F' ' '{print $1}')
+		#else
+		#	print_error_msg "$DESC has been stopped unexpectedly. Please remove $PID"
+		#fi
+		kill $PROC_ID || print_error_msg "$DESC cannot be stopped"
+	else
+		PROC_ID=$(cat $PID)
+		kill $PROC_ID || print_error_msg "$DESC cannot be stopped"
+		rm $PID
+	fi		
+	return 0
+		
+}
+do_status()
+{
+	if [ -f $PID ]; then
+		if $(grep -q $NAME <<< $(ps -fp $(cat $PID) -o cmd))
+		then
+			PROC_ID=$(cat $PID)
+		else
+			print_error_msg "$DESC has been stopped unexpectedly. Please remove $PID"
+		fi
+		log_success_msg "$DESC is running on PID $PROC_ID"
+	else
+		PROC_ID=$(jcmd -l|grep $NAME|awk -F' ' '{print $1}')
+		[ -z $PROC_ID ] && log_success_msg "$DESC is stopped"
+		print_error_msg "$DESC is running but no $PID has been created"
+	fi	
+	return 0
+}
+case "$1" in
+	start)
+		log_daemon_msg "Starting $DESC" 
+		get_args || print_error_msg "Error while reading the configuration file"
+		do_start || print_error_msg "Failed to start"
+		log_success_msg "$DESC started"
+		;;
+	stop)
+		log_daemon_msg "Stoping $DESC" 
+		do_stop || print_error_msg "Failed to stop"
+		log_success_msg "$DESC stopped"
+		;;
+	restart)
+		log_daemon_msg "Stoping $DESC" 
+		do_stop || print_error_msg "Failed to stop"
+		log_success_msg "$DESC stopped"
+		log_daemon_msg "Starting $DESC" 
+		get_args || print_error_msg "Error while reading the configuration file"
+		do_start || print_error_msg "Failed to start"
+		log_success_msg "$DESC started"
+		;;
+	status)
+		do_status || print_error_msg "Failed to get the status"
+		;;		
+	*)
+		echo -e "$USAGE"
+		exit 1
+		;;
+esac
+exit 0
